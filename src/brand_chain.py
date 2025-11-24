@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from app_lc import Consultant, setup_api_config, FAQResponse
 from langchain_openai import ChatOpenAI
 

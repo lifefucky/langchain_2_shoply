@@ -7,8 +7,7 @@ import re
 import sys
 import traceback
 from datetime import datetime
-from pathlib import Path
-from typing import List, Dict, Any, Union, Optional
+from typing import List, Dict, Any, Optional
 
 from dotenv import load_dotenv
 from langchain.callbacks import get_openai_callback
@@ -28,6 +27,7 @@ from pydantic import BaseModel, Field, conlist
 import yaml
 
 from src.styles_prompt import StyleParser
+from logging_config import setup_logger
 
 
 class FAQResponse(BaseModel):
@@ -67,10 +67,8 @@ class ModelConfig:
 
 def setup_api_config() -> ModelConfig:
     """Настройка API ключа с приоритетом: переменные окружения -> .env файл -> ручной ввод"""
-    # Загружаем .env файл, если он существует
     load_dotenv()
 
-    # Проверяем переменные окружения
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("LLM_API_BASE_URL")
     embedding_model = os.getenv("EMBEDDING_MODEL")
@@ -105,7 +103,7 @@ class Consultant:
 
         os.makedirs("logs", exist_ok=True)
         now: str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.logger = self.setup_logger(f"logs/session_{now}.jsonl")
+        self.logger = setup_logger(name=__name__, log_file=f"session_{now}.jsonl")
 
         self.conversation_history: list[dict[str, str]] = []
         self.context_length = self.model_config.context_length
@@ -113,17 +111,7 @@ class Consultant:
         self.few_shot_examples = self._load_few_shot_examples()
         self.example_selector = self._init_example_selector()
         self._style_prompt = None
-
-    @staticmethod
-    def setup_logger(log_file):
-        logger = logging.getLogger(__name__)
-        logger.setLevel(logging.INFO)
-
-        handler = logging.FileHandler(log_file, encoding="utf-8")
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(handler)
-
-        return logger
+        self.add_log('initialized')
 
     @property
     def style_prompt(self):
@@ -149,7 +137,6 @@ class Consultant:
         texts = self.prepare_text_faq()
 
         try:
-            # Настройка embedding модели
             embedding_kwargs = {
                 "api_key": self.model_config.api_key,
                 "model": self.model_config.embedding_model
@@ -220,24 +207,13 @@ class Consultant:
                 if line.strip():
                     try:
                         data = json.loads(line.strip())
-                        output_str = json.dumps({
-                            "answer": data["output"]["answer"],
-                            "tone": data["output"]["tone"],
-                            "actions": data["output"]["actions"]
-                        }, ensure_ascii=False)
+
                         examples.append({
                             "input": data["input"],
                             "context": data.get("context", ""),
                             "output": data["output"]  # Единое поле для ответа
                         })
 
-                        '''examples.append({
-                            "input": data["input"],
-                            "context": data.get("context", ""),
-                            "answer": data["output"]["answer"],
-                            "tone": data["output"]["tone"],
-                            "actions": json.dumps(data["output"]["actions"], ensure_ascii=False)
-                        })'''
                     except Exception as e:
                         self.add_log(
                             type='error',
@@ -414,11 +390,10 @@ class Consultant:
             self.add_log(type='error', query=query, message=response, event='order_error', event_type='not_found')
             return response
 
-    def add_log(self, type: str = "info", query: str = None, message: Union[str, dict] = None, **kwargs):
+    def add_log(self, type: str = "info", query: str = None, **kwargs):
         log_entry = {
-            "timestamp": datetime.now().isoformat(),
+            "component": "Consultant",
             "query": query,
-            "message": message,
             **kwargs
         }
         if type == 'error':
@@ -436,7 +411,6 @@ def format_order_details(info: dict) -> str:
     elif status == "delivered":
         delivered_at = info.get("delivered_at", "не указана")
         try:
-            # Опционально: можно отформатировать дату красиво
             date_obj = datetime.strptime(delivered_at, "%Y-%m-%d")
             delivered_at = date_obj.strftime("%d.%m.%Y")
         except ValueError:
@@ -478,11 +452,9 @@ def main():
             "openai_api_base": config.base_url}
         model = ChatOpenAI(**llm_kwargs)
 
-        # Создаем векторное хранилище
         vector_store = bot.create_vector_store()
         retrieval_chain = bot.retrieval_chain(model=model, vector_store=vector_store)
 
-        # Получаем запрос от пользователя
         print("\n" + "=" * 50)
         print("Введите 'exit' для выхода")
 
@@ -520,5 +492,4 @@ def main():
 
 
 if __name__ == "__main__":
-    print('APPP_LCCCC: das main')
     main()

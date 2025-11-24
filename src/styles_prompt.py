@@ -44,7 +44,6 @@ class Style:
                     return default
             return value if value is not None else default
 
-        # Проверка обязательных ключей
         if required_keys:
             missing = [key for key in required_keys if not get_nested(data, key)]
             if missing:
@@ -81,7 +80,7 @@ class StyleParser:
             try:
                 with open(self.config_path, encoding='utf-8') as f:
                     config = yaml.safe_load(f)
-                # Валидируем обязательные ключи
+
                 self._style = Style.from_dict(config)
             except MissingConfigKeyError as e:
                 print(f"❌ Ошибка конфига: {e}")
@@ -95,7 +94,6 @@ class StyleParser:
         """Генерирует промпт с динамической нумерацией."""
         s = self.style
 
-        # Список всех пунктов с условиями отображения
         sections = [
             (s.persona and s.sentences_max,
              f"Тон: {s.persona}. Максимум {s.sentences_max} предложений в ответе."),
@@ -120,7 +118,6 @@ class StyleParser:
              f"}}"),
         ]
 
-        # Фильтруем и нумеруем только заполненные пункты
         numbered_sections = [
             f"{i}. {text}"
             for i, (condition, text) in enumerate([
