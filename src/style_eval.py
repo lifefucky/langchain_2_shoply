@@ -1,17 +1,15 @@
 import os, json, pathlib, re, statistics
-from dataclasses import dataclass
+
 from typing import List
-from dotenv import load_dotenv
+
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate, \
+    PromptTemplate
 import yaml
 
-from app_lc import ModelConfig
-from brand_chain import TestRun, BrandChain
-
-
-
+from brand_chain import BrandStyleConsultant
+from styles_prompt import StyleParser
 
 '''
 Берутся промпты из eval_prompts.txt
@@ -20,16 +18,13 @@ from brand_chain import TestRun, BrandChain
 Вывод
 
 TODO:
-оптимизировать ввод промпта проверки
+прописать использование класса из brand_chain
+
 
 
 '''
 
-@dataclass
-class PromptDetails:
-    prompt: str
-    temperature: float
-    model: str = ""
+BASE = pathlib.Path(__file__).parent.parent
 
 # LLM-оценка
 class Grade(BaseModel):
@@ -37,12 +32,28 @@ class Grade(BaseModel):
     notes: str
 
 class ReportMaker:
-    def __init__(self, base_path: pathlib.Path, test_bot: TestRun):
+    def __init__(self, base_path: pathlib.Path):
         self.base_path = base_path
+        self.report_path = pathlib.Path(self.base_path).joinpath('reports')
+        os.makedirs(self.report_path, exist_ok=True)
+        self._model_config = None
+        self._test_bot = None
 
-        os.makedirs(pathlib.Path(self.base_path).joinpath('reports'), exist_ok=True)
-        self.model_config = self.model_config()
-        self.test_bot = test_bot
+    @property
+    def model_config(self):
+        if self._model_config is None:
+            with open(pathlib.Path(self.base_path).joinpath('model_configs.yaml'), mode='r', encoding='utf-8') as f:
+                configs = yaml.safe_load(f)['prompts']['report_answer']
+
+            current_version = configs['current_version']
+            self._model_config = configs['versions'][current_version]
+        return self._model_config
+
+    @property
+    def test_bot(self):
+        if self._test_bot is None:
+            self._test_bot = BrandStyleConsultant()
+        return self._test_bot
 
     @staticmethod
     def rule_checks(text: str) -> int:
@@ -59,41 +70,42 @@ class ReportMaker:
             score -= 10
         return max(score, 0)
 
-    def model_config(self):
-        with open(pathlib.Path(self.base_path).joinpath('model_configs.yaml'), mode='r', encoding='utf-8') as f:
-            configs = yaml.safe_load(f)
-        details = configs['prompts']['report_answer']['versions'][ configs['prompts']['report_answer']['current_version'] ]
-        return details
-
     def llm_config(self):
-        load_dotenv(self.base_path / ".env", override=True)
+        config_dict = self.test_bot.model_config.__dict__
 
-        # Проверяем переменные окружения
-        api_key = os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("LLM_API_BASE_URL")
-        llm_model = os.getenv("LLM_MODEL")
-        temperature = float(os.getenv("LLM_TEMPERATURE"))
+        if _temperature := self.model_config.get('temperature'):
+            config_dict['temperature'] = float(_temperature)
 
-        if _temperature := self.model_config['temperature']:
-            temperature = float(_temperature)
+        if _llm_model := self.model_config.get('model'):
+            config_dict['model_name'] = _llm_model
 
-        if _llm_model := self.model_config['model']:
-            llm_model = _llm_model
+        return config_dict
 
-        return {
-            "api_key": api_key,
-            "temperature": temperature,
-            "model_name": llm_model,
-            "openai_api_base": base_url}
+    @property
+    def style(self):
+        if not hasattr(self, '_style'):
+            self._style = StyleParser().style
+        return self._style
+
+    def _system_prompt(self, template):
+        prompt_template = PromptTemplate(
+            template=template,
+            input_variables=['brand_name', 'tone', 'avoid', 'must_include']
+        )
+        return SystemMessagePromptTemplate(
+            prompt=prompt_template.partial(
+                brand_name=self.style.brand,
+                tone=self.style.persona,
+                avoid=', '.join(self.style.avoid),
+                must_include=', '.join(self.style.must_include)
+            )
+        )
 
     def llm_grade(self, text):
         LLM = ChatOpenAI(**self.llm_config())
 
-        system_prompt = SystemMessagePromptTemplate.from_template(self.model_config['prompt']['system'])
-        system_message = system_prompt.format(brand_name=STYLE['brand'],
-                                              tone=STYLE['tone']['persona'],
-                                              avoid=STYLE['tone']['avoid'],
-                                              must_include=', '.join(STYLE['tone']['must_include']))
+        if system_template := self.model_config['prompt']['system']:
+            system_message = self._system_prompt(system_template)
 
         human_prompt = HumanMessagePromptTemplate.from_template(self.model_config['prompt']['user'])
         human_message = human_prompt.format(answer=text)
@@ -107,11 +119,11 @@ class ReportMaker:
 
 
     def eval_batch(self, prompts: List[str]) -> dict:
-        retrieval_chain = self.test_bot.retrieval_chain()
+        test_bot = self.test_bot
 
         results = []
         for p in prompts:
-            reply = self.test_bot.process_query(retrieval_chain=retrieval_chain, query=p)
+            reply = test_bot.process_query(query=p)
 
             rule = self.rule_checks(reply.answer)
             g = self.llm_grade(reply.answer)
@@ -128,20 +140,15 @@ class ReportMaker:
             })
         mean_final = round(statistics.mean(r["final"] for r in results), 2)
         out = {"mean_final": mean_final, "items": results}
-        (REPORTS / "style_eval.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        (self.report_path / "style_eval.json").write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
         return out
 
 if __name__ == "__main__":
-    brand_chain = BrandChain()
 
-    BASE = brand_chain.base()
-    STYLE = brand_chain.style()
 
-    test_run = TestRun()
-
-    r_maker = ReportMaker(base_path=BASE, test_bot=test_run)
+    r_maker = ReportMaker(base_path=BASE)
 
     eval_prompts = (BASE / "data/eval_prompts.txt").read_text(encoding="utf-8").strip().splitlines()
-    report = eval_batch(eval_prompts)
+    report = r_maker.eval_batch(eval_prompts)
     print("Средний балл:", report["mean_final"])
-    print("Отчёт:", REPORTS / "style_eval.json")
+    print("Отчёт:", r_maker.report_path / "style_eval.json")

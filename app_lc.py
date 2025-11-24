@@ -27,8 +27,8 @@ from dataclasses import dataclass
 from pydantic import BaseModel, Field, conlist
 import yaml
 
+from src.styles_prompt import StyleParser
 
-#actions пустой
 
 class FAQResponse(BaseModel):
     answer: str = Field(..., description="Краткий ответ на вопрос пользователя")
@@ -112,6 +112,7 @@ class Consultant:
 
         self.few_shot_examples = self._load_few_shot_examples()
         self.example_selector = self._init_example_selector()
+        self._style_prompt = None
 
     @staticmethod
     def setup_logger(log_file):
@@ -123,6 +124,13 @@ class Consultant:
         logger.addHandler(handler)
 
         return logger
+
+    @property
+    def style_prompt(self):
+        if self._style_prompt is None:
+            sp = StyleParser()
+            self._style_prompt = sp.style_prompt()
+        return self._style_prompt
 
     def format_conversation_history(self) -> str:
         """Форматирует историю диалога в строку"""
@@ -172,11 +180,34 @@ class Consultant:
             self.add_log(type='error', message=str(e), details=details, event_type='vector_store_creation')
             raise
 
-    def system_prompt(self):
-        pass
+    def _version_config(self):
+        chain_config = self._prompt_config["prompts"]["support_answer"]
+        current_version = chain_config["current_version"]
+        version_config = chain_config["versions"][current_version]
+        return version_config
 
-    def user_prompt(self):
-        pass
+    def _system_prompt(self, system_config):
+        prompt_template = PromptTemplate(
+                template=system_config,
+                input_variables=['style_prompt']
+            )
+        partial_prompt = prompt_template.partial(
+                style_prompt=self.style_prompt
+            )
+
+        return SystemMessagePromptTemplate(prompt=partial_prompt)
+
+    def _example_prompt(self):
+        example_prompt = ChatPromptTemplate.from_messages([
+            ("human", "{input}"),
+            ("ai", "{output}")
+        ])
+
+        return FewShotChatMessagePromptTemplate(
+            example_selector=self.example_selector,
+            example_prompt=example_prompt,
+            input_variables=["input"]
+        )
 
     def _load_few_shot_examples(self) -> List[Dict[str, Any]]:
         examples_path = os.path.join(self.data_dir, 'few_shots.jsonl')
@@ -274,42 +305,23 @@ class Consultant:
             search_kwargs={"k": 3}
         )
 
-        chain_config = self._prompt_config["prompts"]["support_answer"]
-        current_version = chain_config["current_version"]
-        version_config = chain_config["versions"][current_version]
+        version_config = self._version_config()
 
         messages = []
-        if system_template:= version_config.get('system'):
-            system_prompt = SystemMessagePromptTemplate(
-                prompt=PromptTemplate(
-                    template=system_template
-                )
-            )
-            #self.add_log(message=system_prompt.prompt)
+        if system_template := version_config.get('system'):
+            system_prompt = self._system_prompt(system_template)
             messages.append(system_prompt)
 
         if self.example_selector:
-            example_prompt = ChatPromptTemplate.from_messages([
-                ("human", "{input}"),
-                ("ai", "{output}")
-            ])
-
-            few_shot_prompt = FewShotChatMessagePromptTemplate(
-                example_selector=self.example_selector,
-                example_prompt=example_prompt,
-                input_variables=["input"]
-            )
-            #self.add_log(message=few_shot_prompt.prompt)
+            few_shot_prompt = self._example_prompt()
             messages.append(few_shot_prompt)
 
-        # Human промпт с вопросом
         user_template = version_config['user']
         user_prompt = HumanMessagePromptTemplate(
             prompt=PromptTemplate(
                 template=user_template
             )
         )
-        #self.add_log(event='human_message_prompt_t', message=user_prompt.prompt)
         messages.append(user_prompt)
 
         input_vars = version_config["input_variables"].copy()
@@ -508,4 +520,5 @@ def main():
 
 
 if __name__ == "__main__":
+    print('APPP_LCCCC: das main')
     main()

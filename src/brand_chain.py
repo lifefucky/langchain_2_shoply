@@ -1,82 +1,40 @@
-import os
-from dataclasses import dataclass
-
-import yaml
-from pathlib import Path
-
+from app_lc import Consultant, setup_api_config, FAQResponse
 from langchain_openai import ChatOpenAI
 
-from app_lc import setup_api_config, Consultant, ModelConfig
 
-'''
-+Нужно, чтобы модель отвечала в формате answer, tone, actions
-app_lc: Доработать промпт, чтобы если статус заказа - предложить выполнить команду
-app_lc: System и User prompt 
-app_lc: Добавить few_shots и использование в промпте
-app_lc: tone of voice добавить
-style_eval: собрать метод для обработки из style_eval.py
-
-доработать style_eval.py
-доработать brand_chain.py
-+Ответы парсятся в Pydantic-модель (структурированный вывод) или через with_structured_output.
-+Доработать FAQ - если вопрос касается статуса заказа - предложить выполнить команду
-'''
-
-
-@dataclass
-class StyleGuide:
-    brand_name: str
-    tone: str
-    avoid: str
-    must_include: str
-
-
-class BrandChain:
+class BrandStyleConsultant:
     def __init__(self):
-        self.base_path = Path('..')
+        self.config = setup_api_config()
+        self.consultant = Consultant(model_config=self.config)
+        self.retrieval_chain = None
+        self._init_components()
 
-        with open(Path(self.base_path).joinpath('data/style_guide.yaml'), mode='r', encoding='utf-8') as f:
-            self.style_guide = yaml.safe_load(f)
+    def _init_components(self):
+        """Инициализация LLM и RAG-цепочки"""
+        # Корректная инициализация LLM с поддержкой кастомных эндпоинтов
+        self.llm = ChatOpenAI(
+            api_key=self.config.api_key,
+            temperature=self.config.temperature,
+            model=self.config.llm_model,
+            base_url=self.config.base_url or None
+        )
+        # Создание компонентов RAG через методы Consultant
+        vector_store = self.consultant.create_vector_store()
+        self.retrieval_chain = self.consultant.retrieval_chain(
+            model=self.llm,
+            vector_store=vector_store
+        )
 
-    def base(self):
-        print(self.base_path)
-        return self.base_path
-
-    def style(self) -> StyleGuide:
-        style_guide = self.style_guide
-        return StyleGuide(brand_name=style_guide['brand'],
-                          tone=style_guide['tone']['persona'],
-                          avoid=style_guide['tone']['avoid'],
-                          must_include=', '.join(style_guide['tone']['must_include']))
-
-
-class TestRun:
-    def __init__(self):
-        self.bot = self.build_bot(setup_api_config())
-
-    def build_bot(self, model_config: ModelConfig):
-        return Consultant(model_config=model_config)
-
-    def retrieval_chain(self):
-        config = self.bot.model_config
-        self.bot.add_log(event="config_loaded", config=config.to_dict())
-
-        llm_kwargs = {
-            "api_key": config.api_key,
-            "temperature": config.temperature,
-            "model_name": config.llm_model,
-            "openai_api_base": config.base_url}
-        model = ChatOpenAI(**llm_kwargs)
-        vector_store = self.bot.create_vector_store()
-        return self.bot.retrieval_chain(model=model, vector_store=vector_store)
-
-    def process_query(self, retrieval_chain, query: str):
-
+    def process_query(self, query: str) -> FAQResponse:
+        """Обработка запроса с использованием структурированного вывода"""
         if query.startswith("/order"):
-            response = self.bot.orders_processor(query=query)
-            self.bot.add_to_history("assistant", response)
+            response = self.consultant.orders_processor(query=query)
+            self.consultant.add_to_history("assistant", response)
         else:
-            response = self.bot.faq_processor(query=query, retrieval_chain=retrieval_chain)
-            self.bot.add_to_history("assistant", response)
-
+            self.consultant.add_to_history("user", query)
+            response = self.consultant.faq_processor(
+                query=query,
+                retrieval_chain=self.retrieval_chain
+            )
+            self.consultant.add_to_history("assistant", response.answer)
         return response

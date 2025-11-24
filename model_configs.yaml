@@ -1,7 +1,24 @@
 prompts:
   support_answer:
-    current_version: v1
+    current_version: v2
     versions:
+      v2:
+        system: |
+          {style_prompt}
+          Используй только предоставленный контекст для ответа.
+        user: |
+          Контекст: {context}
+
+          История диалога: 
+          {history}
+
+          Вопрос: {input}
+          Ответ:
+        input_variables:
+          - context
+          - input
+          - history
+        few_shot: [ ]
       v1:
         system:
         user: |
